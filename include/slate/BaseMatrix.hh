@@ -1956,6 +1956,7 @@ void BaseMatrix<scalar_t>::listBcast(
                 else
                     life += tileLife(i, j); // todo: use temp tile to receive
                 tileLife(i, j, life);
+                tileIncrementReceiveCount( i, j );
             }
 
             // Send across MPI ranks.
