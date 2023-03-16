@@ -35,6 +35,7 @@ void getrf_nopiv(
     const int priority_1 = 1;
     const int queue_0 = 0;
     const int queue_1 = 1;
+    const int queue_2 = 2;
     const Layout layout = Layout::ColMajor;
 
     // Options
@@ -44,7 +45,7 @@ void getrf_nopiv(
     if (target == Target::Devices) {
         // two batch arrays plus one for each lookahead
         // batch array size will be set as needed
-        A.allocateBatchArrays(0, 2 + lookahead);
+        A.allocateBatchArrays(0, 2 + (lookahead>0));
         A.reserveDeviceWorkspace();
     }
 
@@ -114,13 +115,15 @@ void getrf_nopiv(
                   bcast_list, layout, life_1, is_shared );
             }
             // update lookahead column(s), high priority
-            for (int64_t j = k+1; j < k+1+lookahead && j < A_nt; ++j) {
+            if (lookahead > 0 && k+1 < A_nt) {
+                int64_t num_la = std::min(A_nt-k-1, lookahead);
+                int64_t la_dep = k + std::min(int64_t(2), num_la);
                 #pragma omp task depend(in:diag[k]) \
-                                 depend(inout:column[j]) \
+                                 depend(inout:column[k+1]) \
+                                 depend(inout:column[k+la_dep]) \
+                                 depend(inout:column[k+num_la]) \
                                  priority(1)
                 {
-                    int tag_j = j;
-                    int queue_jk1 = j-k+1;
                     auto Akk = A.sub(k, k, k, k);
                     auto Tkk =
                         TriangularMatrix<scalar_t>(Uplo::Lower, Diag::Unit, Akk);
@@ -128,24 +131,32 @@ void getrf_nopiv(
                     // solve A(k, k) A(k, j) = A(k, j)
                     internal::trsm<target>(
                         Side::Left,
-                        one, std::move( Tkk ), A.sub(k, k, j, j),
-                        priority_1, layout, queue_jk1 );
+                        one, std::move( Tkk ), A.sub(k, k, k+1, k+num_la),
+                        priority_1, layout, queue_2 );
 
-                    // send A(k, j) across column A(k+1:mt-1, j)
-                    A.tileBcast(k, j, A.sub(k+1, A_mt-1, j, j), layout, tag_j);
+                    BcastListTag bcast_list;
+                    // bcast the tiles of the panel to the right hand side
+                    for (int64_t j = k+1; j < k+1+num_la; ++j) {
+                        // send A(i, k) across row A(i, k+1:nt-1)
+                        const int64_t tag = j + A_mt;
+                        bcast_list.push_back({k, j, {A.sub(k+1, A_nt-1, j, j)}, tag});
+                    }
+                    A.template listBcastMT<target>(
+                      bcast_list, layout, life_1, is_shared );
                 }
 
                 #pragma omp task depend(in:column[k]) \
-                                 depend(inout:column[j]) \
+                                 depend(inout:column[k+1]) \
+                                 depend(inout:column[k+la_dep]) \
+                                 depend(inout:column[k+num_la]) \
                                  priority(1)
                 {
-                    int queue_jk1 = j-k+1;
                     // A(k+1:mt-1, j) -= A(k+1:mt-1, k) * A(k, j)
                     internal::gemm<target>(
                         -one, A.sub(k+1, A_mt-1, k, k),
-                              A.sub(k, k, j, j),
-                        one,  A.sub(k+1, A_mt-1, j, j),
-                        layout, priority_1, queue_jk1 );
+                              A.sub(k, k, k+1, k+num_la),
+                        one,  A.sub(k+1, A_mt-1, k+1, k+num_la),
+                        layout, priority_1, queue_2 );
                 }
             }
             // update trailing submatrix, normal priority
