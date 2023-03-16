@@ -125,27 +125,21 @@ void getrf_nopiv(
                         Side::Right,
                         one, std::move( Tkk ), A.sub(k+1, k+num_la_row, k, k),
                         priority_2, layout, queue_0 );
-                }
 
-                #pragma omp task depend(inout:A21[k]) \
-                                 depend(inout:listBcastMT_token) \
-                                 priority(2)
-                {
-                    BcastListTag bcast_list;
+                    BcastList bcast_list;
                     // bcast the tiles of the panel to the right hand side
                     for (int64_t i = k+1; i < k+1+num_la_row; ++i) {
                         // send A(i, k) across row A(i, k+1:nt-1)
-                        const int64_t tag = i;
-                        bcast_list.push_back({i, k, {A.sub(i, i, k+1, A_nt-1)}, tag});
+                        bcast_list.push_back({i, k, {A.sub(i, i, k+1, A_nt-1)}});
                     }
-                    A.template listBcastMT<target>(
-                      bcast_list, layout, life_1, is_shared );
+                    int64_t tag = k+1;
+                    A.template listBcast<target>(
+                      bcast_list, layout, tag, life_1, is_shared );
                 }
             }
             if (tr_row) {
                 #pragma omp task depend(inout:A31[k]) \
                                  depend(in:A11[k]) \
-                                 depend(inout:listBcastMT_token) \
                                  priority(1)
                 {
                     auto Akk = A.sub(k, k, k, k);
@@ -155,8 +149,12 @@ void getrf_nopiv(
                         Side::Right,
                         one, std::move( Tkk ), A.sub(k+1+lookahead, A_mt-1, k, k),
                         priority_1, layout, queue_1 );
+                }
 
-
+                #pragma omp task depend(inout:A31[k]) \
+                                 depend(inout:listBcastMT_token) \
+                                 priority(1)
+                {
                     BcastListTag bcast_list;
                     // bcast the tiles of the panel to the right hand side
                     for (int64_t i = k+1+lookahead; i < A_mt; ++i) {
@@ -183,16 +181,15 @@ void getrf_nopiv(
                         one, std::move( Tkk ), A.sub(k, k, k+1, k+num_la_col),
                         priority_2, layout, queue_2 );
 
-                    BcastListTag bcast_list;
+                    BcastList bcast_list;
                     // bcast the tiles of the panel to the right hand side
                     for (int64_t j = k+1; j < k+1+num_la_col; ++j) {
                         // send A(i, k) across row A(i, k+1:nt-1)
-                        const int64_t tag = j + A_mt;
-                        bcast_list.push_back({k, j, {A.sub(k+1, A_mt-1, j, j)},
-                                              tag});
+                        bcast_list.push_back({k, j, {A.sub(k+1, A_mt-1, j, j)}});
                     }
-                    A.template listBcastMT<target>(
-                      bcast_list, layout, life_1, is_shared );
+                    int64_t tag = k+1+A_mt;
+                    A.template listBcast<target>(
+                      bcast_list, layout, tag, life_1, is_shared );
                 }
             }
             if (tr_col) {
